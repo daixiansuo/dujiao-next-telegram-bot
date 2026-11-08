@@ -19,7 +19,7 @@ func TestHelpCompactShortcutsAndConfiguredIntroAreReadOnly(t *testing.T) {
 	for _, locale := range []string{"zh-CN", "zh-TW", "en-US"} {
 		a, f := newFormFixture(t, nil)
 		for _, target := range []string{"", "javascript:bad", "@synthetic_support", "https://support.example.invalid/help"} {
-			a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: target}})
+			a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: target}})
 			a.showHelp(context.Background(), 42, locale)
 			k := formKeyboard(t, f)
 			assertCompactKeyboard(t, k)
@@ -33,9 +33,13 @@ func TestHelpCompactShortcutsAndConfiguredIntroAreReadOnly(t *testing.T) {
 				}
 			}
 		}
-		a.UpdateConfig(dujiao.BotConfig{Help: dujiao.BotHelpConfig{Intro: dujiao.LocalizedText{locale: "商家说明 <custom>&"}}})
-		if a.helpText(locale) != "商家说明 &lt;custom&gt;&amp;" {
-			t.Fatal("merchant help intro was rewritten or not safely escaped")
+		a.UpdateConfig(dujiao.BotConfig{Enabled: true, Help: dujiao.BotHelpConfig{Enabled: true, Intro: dujiao.LocalizedText{locale: "商家说明 <custom>&"}}})
+		a.showHelp(context.Background(), 42, locale)
+		f.mu.Lock()
+		rendered := f.texts[len(f.texts)-1]
+		f.mu.Unlock()
+		if !strings.Contains(rendered, "商家说明 &lt;custom&gt;&amp;") || strings.Contains(rendered, "<custom>") {
+			t.Fatal("merchant help intro was rewritten or not safely escaped", rendered)
 		}
 		if len(f.orders) != 0 || len(f.previews) != 0 || len(f.rechargeRequests) != 0 || len(broadcastState(t, a).Drafts) != 0 || broadcastState(t, a).Job != nil {
 			t.Fatal("rendering help started a business operation")
@@ -170,7 +174,7 @@ func TestSubscriptionAnnouncementAndEditFailureOnlyResendPresentation(t *testing
 		case "not modified":
 			f.editFailure = "Bad Request: message is not modified"
 		case "session unavailable":
-			a.UpdateConfig(dujiao.BotConfig{DefaultLocale: "en-US"})
+			a.UpdateConfig(dujiao.BotConfig{Enabled: true, DefaultLocale: "en-US"})
 			a.sessions = unavailableSupportSessions{Store: a.sessions}
 		}
 		before := len(f.methods)

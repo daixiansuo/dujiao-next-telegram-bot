@@ -72,9 +72,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load bot config from Dujiao-Next: %w", err)
 	}
-	if !botConfig.Config.Enabled {
-		return errors.New("Telegram bot is disabled in the Dujiao-Next channel configuration")
-	}
 	token := cfg.TelegramBotToken
 	if token == "" {
 		token = botConfig.Config.BotToken
@@ -101,6 +98,11 @@ func run() error {
 	// Audit INFO records remain enabled even when application logs use WARN/ERROR.
 	app.ConfigureOperations(cfg.AdminUserIDs, cfg.RatePolicy, slog.New(slog.NewJSONHandler(auditWriter, nil)))
 	app.ConfigureBroadcast(cfg.BroadcastInterval, cfg.BroadcastMaxRecipients)
+	if cfg.SupportEnabled {
+		if err := app.ConfigureSupport(cfg.SupportChatID, cfg.SupportUserIDs); err != nil {
+			return fmt.Errorf("configure customer support: %w", err)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -142,30 +144,58 @@ func run() error {
 	return runErr
 }
 
+const configSyncInterval = time.Minute
+
 func heartbeatLoop(ctx context.Context, logger *slog.Logger, api *dujiao.Client, app *telegramapp.App) {
-	send := func() {
-		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if err := api.Heartbeat(requestCtx, version, "long_polling", nil); err != nil {
-			logger.Warn("send channel heartbeat", "error", err)
-		}
-		config, err := api.BotConfig(requestCtx)
-		if err != nil {
-			logger.Warn("refresh bot config", "error", err)
-			return
-		}
-		app.UpdateConfig(config.Config)
-	}
-	send()
-	ticker := time.NewTicker(5 * time.Minute)
+	syncAndHeartbeat(ctx, logger, api, app)
+	ticker := time.NewTicker(configSyncInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			send()
+			syncAndHeartbeat(ctx, logger, api, app)
 		}
+	}
+}
+
+// Configuration and heartbeat have independent deadlines. A slow/failed refresh
+// must not consume the heartbeat's budget or falsely acknowledge a new version.
+func syncAndHeartbeat(ctx context.Context, logger *slog.Logger, api *dujiao.Client, app *telegramapp.App) {
+	var warnings []string
+	var applied []int
+	configCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	remote, err := api.BotConfig(configCtx)
+	cancel()
+	if err != nil {
+		warnings = append(warnings, "configuration_refresh_failed")
+		logger.Warn("refresh bot configuration unavailable")
+	} else {
+		publicCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+		public, publicErr := api.PublicTelegramConfig(publicCtx)
+		stop()
+		if publicErr != nil {
+			public = app.PublicTelegramConfig()
+			warnings = append(warnings, "public_configuration_refresh_failed")
+		}
+		remote.Config.PublicTelegram = public
+		if remote.Config.ConfigVersion == 0 {
+			remote.Config.ConfigVersion = remote.ConfigVersion
+		}
+		app.UpdateConfig(remote.Config)
+		checkCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+		configWarnings := app.ConfigurationWarnings(checkCtx)
+		stop()
+		warnings = append(warnings, configWarnings...)
+		if len(configWarnings) == 0 {
+			applied = []int{remote.Config.ConfigVersion}
+		}
+	}
+	heartbeatCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+	defer stop()
+	if err := api.Heartbeat(heartbeatCtx, version, "long_polling", warnings, applied...); err != nil {
+		logger.Warn("send channel heartbeat unavailable")
 	}
 }
 

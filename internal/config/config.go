@@ -32,6 +32,9 @@ type Config struct {
 	RatePolicy             ratelimit.Policy
 	BroadcastInterval      time.Duration
 	BroadcastMaxRecipients int
+	SupportEnabled         bool
+	SupportChatID          int64
+	SupportUserIDs         []int64
 }
 
 func Load() (Config, error) {
@@ -55,6 +58,21 @@ func LoadFrom(env func(string) string) (Config, error) {
 	}
 
 	var err error
+	if raw := strings.TrimSpace(env("BOT_SUPPORT_ENABLED")); raw != "" {
+		cfg.SupportEnabled, err = strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New("BOT_SUPPORT_ENABLED must be true or false")
+		}
+	}
+	if raw := strings.TrimSpace(env("BOT_SUPPORT_CHAT_ID")); raw != "" {
+		cfg.SupportChatID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || cfg.SupportChatID >= 0 {
+			return Config{}, errors.New("BOT_SUPPORT_CHAT_ID must be a negative Telegram group ID")
+		}
+	}
+	if cfg.SupportUserIDs, err = operations.ParseAdminIDs(env("BOT_SUPPORT_USER_IDS")); err != nil {
+		return Config{}, errors.New("BOT_SUPPORT_USER_IDS must contain positive Telegram user IDs (maximum 10)")
+	}
 	if cfg.BroadcastInterval, err = durationEnv(env, "BOT_BROADCAST_INTERVAL", time.Second); err != nil {
 		return Config{}, err
 	}
@@ -105,6 +123,10 @@ func LoadFrom(env func(string) string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.SupportEnabled && (c.RedisURL == "" || c.SupportChatID >= 0 || len(c.SupportUserIDs) == 0) {
+		return errors.New("enabled support requires BOT_REDIS_URL, a negative BOT_SUPPORT_CHAT_ID and BOT_SUPPORT_USER_IDS")
+	}
+
 	if c.RedisURL != "" {
 		key, err := hex.DecodeString(c.SessionEncryptionKey)
 		if err != nil || len(key) != 32 {

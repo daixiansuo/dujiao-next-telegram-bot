@@ -141,3 +141,37 @@ func TestRedisRequiresIndependentEncryptionKey(t *testing.T) {
 		t.Fatal("valid Redis configuration rejected", err)
 	}
 }
+
+func TestSupportConfigRequiresDurableStorageAndIndependentStaff(t *testing.T) {
+	values := map[string]string{"DUJIAO_BASE_URL": "https://shop.example.com", "DUJIAO_CHANNEL_KEY": "key", "DUJIAO_CHANNEL_SECRET": "secret", "BOT_ADMIN_USER_IDS": "99"}
+	read := func(key string) string { return values[key] }
+	if c, e := LoadFrom(read); e != nil || c.SupportEnabled || len(c.SupportUserIDs) != 0 {
+		t.Fatal("disabled defaults", e)
+	}
+	values["BOT_SUPPORT_ENABLED"] = "true"
+	if _, e := LoadFrom(read); e == nil {
+		t.Fatal("support without routing accepted")
+	}
+	values["BOT_SUPPORT_CHAT_ID"] = "-10042"
+	values["BOT_SUPPORT_USER_IDS"] = "42,43,42"
+	if _, e := LoadFrom(read); e == nil {
+		t.Fatal("support without Redis accepted")
+	}
+	values["BOT_REDIS_URL"] = "redis://redis:6379/0"
+	values["BOT_SESSION_ENCRYPTION_KEY"] = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if c, e := LoadFrom(read); e != nil || c.SupportChatID != -10042 || len(c.SupportUserIDs) != 2 || c.AdminUserIDs[0] != 99 {
+		t.Fatal("valid support rejected or permissions merged", e)
+	}
+	for _, key := range []string{"BOT_SUPPORT_ENABLED", "BOT_SUPPORT_CHAT_ID", "BOT_SUPPORT_USER_IDS"} {
+		old := values[key]
+		values[key] = "invalid"
+		if _, e := LoadFrom(read); e == nil {
+			t.Fatal("invalid config accepted", key)
+		}
+		values[key] = old
+	}
+	values["BOT_SUPPORT_CHAT_ID"] = "42"
+	if _, e := LoadFrom(read); e == nil {
+		t.Fatal("private support group accepted")
+	}
+}

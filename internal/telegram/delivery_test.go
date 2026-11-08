@@ -98,7 +98,7 @@ func newDeliveryFixture(t *testing.T) (*App, *deliveryFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := New("999:private-test-token", api, dujiao.BotConfig{}, "zh-CN", time.Second, srv.URL, slog.New(slog.NewJSONHandler(&f.logs, nil)))
+	a, err := New("999:private-test-token", api, dujiao.BotConfig{Enabled: true}, "zh-CN", time.Second, srv.URL, slog.New(slog.NewJSONHandler(&f.logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

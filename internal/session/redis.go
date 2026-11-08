@@ -11,6 +11,7 @@ import (
 	"errors"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -25,6 +26,7 @@ var (
 // Redis stores encrypted, expiring drafts separately from permanent safety metadata.
 // Updates use one CAS attempt: a callback is NEVER replayed after a conflict/error.
 type Redis struct {
+	localeMu                     sync.RWMutex
 	client                       *redis.Client
 	aead                         cipher.AEAD
 	prefix, epoch, defaultLocale string
@@ -32,10 +34,11 @@ type Redis struct {
 }
 
 type redisMeta struct {
-	Version  int
-	Revision string
-	Locale   string
-	Guard    *WithdrawalGuard
+	Version    int
+	Revision   string
+	Locale     string
+	Guard      *WithdrawalGuard
+	OrderGuard *OrderCreateGuard
 }
 
 const redisRead = `
@@ -97,7 +100,7 @@ func (r *Redis) keys(uid int64) []string {
 	return []string{r.prefix + ":epoch", base + ":meta", base + ":draft"}
 }
 
-func (r *Redis) failure(err error) State { return State{Locale: r.defaultLocale, Err: err} }
+func (r *Redis) failure(err error) State { return State{Locale: r.defaultLanguage(), Err: err} }
 
 func (r *Redis) read(ctx context.Context, uid int64) (State, string, error) {
 	values, err := r.client.Eval(ctx, redisRead, r.keys(uid)).Slice()
@@ -115,7 +118,7 @@ func (r *Redis) read(ctx context.Context, uid int64) (State, string, error) {
 	if !ok {
 		return State{}, "", ErrCorrupt
 	}
-	state := State{Locale: r.defaultLocale}
+	state := State{Locale: r.defaultLanguage()}
 	if metaJSON == "" {
 		if body != "" {
 			return State{}, "", ErrCorrupt
@@ -151,7 +154,7 @@ func (r *Redis) read(ctx context.Context, uid int64) (State, string, error) {
 			}
 		}
 	}
-	state.Locale, state.WithdrawalGuard = meta.Locale, meta.Guard
+	state.Locale, state.WithdrawalGuard, state.OrderGuard = meta.Locale, meta.Guard, meta.OrderGuard
 	return normalizeState(state, r.now()), metaJSON, nil
 }
 
@@ -178,16 +181,16 @@ func (r *Redis) Update(uid int64, update func(*State)) State {
 	// confirmations can continually invalidate the winning worker's posting CAS.
 	if reflect.DeepEqual(original, state) {
 		var old redisMeta
-		if previous == "" || (json.Unmarshal([]byte(previous), &old) == nil && reflect.DeepEqual(old.Guard, state.WithdrawalGuard)) {
+		if previous == "" || (json.Unmarshal([]byte(previous), &old) == nil && reflect.DeepEqual(old.Guard, state.WithdrawalGuard) && reflect.DeepEqual(old.OrderGuard, state.OrderGuard)) {
 			return cloneState(state)
 		}
 	}
-	meta, err := json.Marshal(redisMeta{Version: 1, Revision: rand.Text(), Locale: state.Locale, Guard: state.WithdrawalGuard})
+	meta, err := json.Marshal(redisMeta{Version: 1, Revision: rand.Text(), Locale: state.Locale, Guard: state.WithdrawalGuard, OrderGuard: state.OrderGuard})
 	if err != nil {
 		return r.failure(ErrCorrupt)
 	}
 	draft := state
-	draft.Locale, draft.WithdrawalGuard = "", nil
+	draft.Locale, draft.WithdrawalGuard, draft.OrderGuard = "", nil, nil
 	var body []byte
 	ttl := 24 * time.Hour
 	if draft.Flow != "" || draft.Purchase != nil || draft.GiftCard != nil || draft.Recharge != nil || draft.Quantity != nil || draft.Withdrawal != nil || draft.OrderLookup != nil {
@@ -254,4 +257,15 @@ func (r *Redis) Health() error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func (r *Redis) SetDefaultLocale(locale string) {
+	r.localeMu.Lock()
+	defer r.localeMu.Unlock()
+	r.defaultLocale = locale
+}
+func (r *Redis) defaultLanguage() string {
+	r.localeMu.RLock()
+	defer r.localeMu.RUnlock()
+	return r.defaultLocale
 }

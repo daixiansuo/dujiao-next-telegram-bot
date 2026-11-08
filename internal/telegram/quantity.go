@@ -104,7 +104,7 @@ func quantityCard(locale string, product dujiao.ProductDetail, skuID uint, quant
 	} else {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已售罄", "已售罄", "Out of stock"), CallbackData: "noop"}})
 	}
-	back := models.InlineKeyboardButton{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"}
+	back := models.InlineKeyboardButton{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: productCategoryCallback(product)}
 	if len(product.SKUs) > 1 {
 		back = models.InlineKeyboardButton{Text: tr(locale, "‹ 更换规格", "‹ 更換規格", "‹ Change option"), CallbackData: fmt.Sprintf("product:%d", product.ID)}
 	}
@@ -113,7 +113,7 @@ func quantityCard(locale string, product dujiao.ProductDetail, skuID uint, quant
 		secondary = append([]models.InlineKeyboardButton{{Text: tr(locale, "商品详情", "商品詳情", "Product details"), CallbackData: fmt.Sprintf("productinfo:%d:%d:%d", product.ID, skuID, quantity)}}, secondary...)
 	}
 	if len(product.SKUs) > 1 {
-		secondary = append(secondary, models.InlineKeyboardButton{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"})
+		secondary = append(secondary, models.InlineKeyboardButton{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: productCategoryCallback(product)})
 	}
 	if len(secondary)%2 != 0 {
 		secondary = append(secondary, models.InlineKeyboardButton{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"})
@@ -135,7 +135,7 @@ func (a *App) showProductInfo(ctx context.Context, chatID int64, messageID int, 
 	text := "<b>" + html.EscapeString(product.Title) + "</b>\n\n" + html.EscapeString(truncate(description, 2500))
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
 		{Text: tr(locale, "‹ 返回数量选择", "‹ 返回數量選擇", "‹ Quantity"), CallbackData: fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity)},
-		{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"},
+		{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: productCategoryCallback(product)},
 	}}})
 }
 

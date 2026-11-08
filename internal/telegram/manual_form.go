@@ -22,6 +22,9 @@ import (
 const formLifetime = 30 * time.Minute
 
 func (a *App) startManualForm(ctx context.Context, chatID int64, messageID int, user *models.User, product dujiao.ProductDetail, skuID uint, quantity int) {
+	if !a.orderCreationAvailable(ctx, user.ID) {
+		return
+	}
 	locale := a.sessions.Get(user.ID).Locale
 	if chatID != user.ID {
 		a.send(ctx, chatID, tr(locale, "请在机器人私聊中填写购买资料。", "請在機器人私訊中填寫購買資料。", "Please fill in purchase details in a private chat with the bot."), nil)
@@ -353,6 +356,9 @@ func (a *App) previewForm(ctx context.Context, user *models.User, draft *session
 }
 
 func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session.PurchaseDraft) {
+	if !a.orderCreationAvailable(ctx, user.ID) {
+		return
+	}
 	if !a.allowWrite(ctx, draft.ChatID, user.ID, operations.Order) {
 		return
 	}
@@ -407,7 +413,7 @@ func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session
 			return
 		}
 	}
-	err = a.createOrderWithData(ctx, draft.ChatID, draft.PreviewID, user, draft.ProductID, draft.SKUID, draft.Quantity, draftOrderRequest(user, locale, draft, values).ManualFormData, draft.CouponCode)
+	err = a.createOrderWithData(ctx, draft.ChatID, draft.PreviewID, user, draft.ProductID, draft.SKUID, draft.Quantity, draftOrderRequest(user, locale, draft, values).ManualFormData, draft.CouponCode, draft.ID)
 	if isAPIError(err, "coupon_invalid") {
 		retained = true
 		a.restoreCheckout(ctx, user, draft)

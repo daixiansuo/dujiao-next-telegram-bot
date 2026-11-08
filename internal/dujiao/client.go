@@ -60,13 +60,15 @@ func (c *Client) BotConfig(ctx context.Context) (BotConfigResponse, error) {
 	return get[BotConfigResponse](ctx, c, "/telegram/config", nil)
 }
 
-func (c *Client) Heartbeat(ctx context.Context, version, webhookStatus string, warnings []string) error {
-	_, err := post[map[string]any](ctx, c, "/telegram/heartbeat", map[string]any{
-		"bot_version":    version,
-		"webhook_status": webhookStatus,
-		"license_status": "community",
-		"warnings":       warnings,
-	})
+func (c *Client) Heartbeat(ctx context.Context, version, webhookStatus string, warnings []string, appliedVersions ...int) error {
+	payload := map[string]any{
+		"bot_version": version, "webhook_status": webhookStatus,
+		"license_status": "community", "warnings": warnings,
+	}
+	if len(appliedVersions) > 0 {
+		payload["applied_config_version"] = appliedVersions[0]
+	}
+	_, err := post[map[string]any](ctx, c, "/telegram/heartbeat", payload)
 	return err
 }
 
@@ -92,7 +94,6 @@ func (c *Client) Products(ctx context.Context, locale, channelUserID string, cat
 	}
 	if categoryID > 0 {
 		query.Set("category_id", strconv.FormatUint(uint64(categoryID), 10))
-		query.Set("exact", "1")
 	}
 	return get[ProductList](ctx, c, "/catalog/products", query)
 }

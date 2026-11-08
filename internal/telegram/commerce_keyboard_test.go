@@ -42,6 +42,9 @@ func assertCompactKeyboard(t *testing.T, k models.InlineKeyboardMarkup) {
 			if b.CopyText != nil {
 				actions++
 			}
+			if b.WebApp != nil {
+				actions++
+			}
 			if actions != 1 || b.Text == "" || len(b.CallbackData) > 64 {
 				t.Fatal("invalid SDK button")
 			}
@@ -119,7 +122,7 @@ func TestOrderListButtonsAreNumberedAndKeepContext(t *testing.T) {
 
 func TestOrderDetailGroupsToolsAndKeepsPrimaryAndSafeCancel(t *testing.T) {
 	a, f := newPendingFixture(t)
-	a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
+	a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
 	for _, locale := range []string{"zh-CN", "zh-TW", "en-US"} {
 		a.sessions.Update(42, func(s *session.State) { s.Locale = locale })
 		pendingClick(a, 42, 42, 10, "order:7:p:2")

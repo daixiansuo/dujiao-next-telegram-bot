@@ -112,7 +112,7 @@ func TestWithdrawalCompactChannelsReviewAndExitInvalidateOldConfirm(t *testing.T
 func TestSupportCompactFooterAndIssueLabelsKeepFullDraftAndContext(t *testing.T) {
 	for _, locale := range []string{"zh-CN", "zh-TW", "en-US"} {
 		a, f := newPendingFixture(t)
-		a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
+		a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
 		a.sessions.Update(42, func(s *session.State) { s.Locale = locale })
 		for _, reason := range []string{"p", "d", "r", "g"} {
 			pendingClick(a, 42, 42, 10, "support:7:p:2:"+reason)

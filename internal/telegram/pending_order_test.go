@@ -181,7 +181,7 @@ func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	a, e := New("999:test-private-token", api, dujiao.BotConfig{}, "zh-CN", time.Second, srv.URL, slog.New(slog.NewJSONHandler(&f.logs, nil)))
+	a, e := New("999:test-private-token", api, dujiao.BotConfig{Enabled: true}, "zh-CN", time.Second, srv.URL, slog.New(slog.NewJSONHandler(&f.logs, nil)))
 	if e != nil {
 		t.Fatal(e)
 	}

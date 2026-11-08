@@ -171,6 +171,9 @@ func (a *App) renderOrderSupport(ctx context.Context, chatID int64, messageID in
 	text := "<b>" + tr(locale, "订单售后", "訂單售後", "Order support") + "</b>\n" + tr(locale, "当前状态：", "目前狀態：", "Current status: ") + orderStatus(locale, order.Status)
 	text += "\n\n" + supportGuidance(locale, order.Status)
 	var rows [][]models.InlineKeyboardButton
+	if buttons := a.supportEntryButtons(locale, order.OrderID); len(buttons) > 0 {
+		rows = append(rows, buttons)
+	}
 	if message != "" {
 		text += "\n\n<pre>" + html.EscapeString(message) + "</pre>"
 		rows = append(rows, []models.InlineKeyboardButton{

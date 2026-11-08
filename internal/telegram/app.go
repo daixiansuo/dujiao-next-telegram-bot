@@ -10,7 +10,6 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +45,7 @@ type App struct {
 	broadcastMax    int
 	deliveries      delivery.Store
 	checkout        checkout.Store
+	support         *supportService
 
 	configMu sync.RWMutex
 	config   dujiao.BotConfig
@@ -120,6 +120,7 @@ func (a *App) Start(ctx context.Context) {
 		{Command: "affiliate", Description: "推广中心 / Affiliate"},
 		{Command: "language", Description: "切换语言 / Language"},
 		{Command: "help", Description: "帮助 / Help"},
+		{Command: "support", Description: "人工客服 / Human support"},
 		{Command: "whoami", Description: "查看 Telegram 用户 ID / My ID"},
 		{Command: "subscribe", Description: "订阅商店公告 / Subscribe"},
 		{Command: "unsubscribe", Description: "退订公告（保留订单通知）/ Unsubscribe"},
@@ -134,6 +135,11 @@ func (a *App) UpdateConfig(config dujiao.BotConfig) {
 	a.configMu.Lock()
 	a.config = config
 	a.configMu.Unlock()
+	if config.DefaultLocale == "zh-CN" || config.DefaultLocale == "zh-TW" || config.DefaultLocale == "en-US" {
+		if store, ok := a.sessions.(interface{ SetDefaultLocale(string) }); ok {
+			store.SetDefaultLocale(config.DefaultLocale)
+		}
+	}
 }
 
 func (a *App) Notify(ctx context.Context, userID int64, eventType string, event callback.Event) error {
@@ -177,12 +183,28 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleCallback(ctx, update.CallbackQuery)
 		return
 	}
-	if update.Message == nil || update.Message.From == nil || update.Message.Text == "" {
+	if update.Message == nil || update.Message.From == nil {
 		return
 	}
 	message := update.Message
 	command, argument := parseCommand(message.Text)
 	if !a.allowIngress(ctx, message.Chat.ID, message.From.ID, command == "/cancel" || command == "/unsubscribe") {
+		return
+	}
+	if !a.botConfig().Enabled && !(command == "/unsubscribe" && message.Chat.ID == message.From.ID && message.From.ID > 0) {
+		if message.Chat.ID == message.From.ID {
+			a.send(ctx, message.Chat.ID, tr(a.sessions.Get(message.From.ID).Locale, "商店机器人暂时停用，请稍后再试。", "商店機器人暫時停用，請稍後再試。", "The store bot is paused. Please try again later."), nil)
+		}
+		return
+	}
+	if message.Chat.ID != message.From.ID {
+		a.handleSupportMessage(ctx, message)
+		return
+	}
+	if a.handleSupportMessage(ctx, message) {
+		return
+	}
+	if message.Text == "" {
 		return
 	}
 	if a.handleBroadcastCommand(ctx, message, command) {
@@ -212,7 +234,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	}
 	navigating := false
 	switch command {
-	case "/start", "/products", "/orders", "/wallet", "/recharge", "/redeem", "/affiliate", "/language", "/help", "/cancel":
+	case "/start", "/products", "/orders", "/wallet", "/recharge", "/redeem", "/affiliate", "/language", "/help", "/support", "/cancel":
 		navigating = true
 	}
 	if state.Flow == "manual_form" && !navigating {
@@ -274,6 +296,8 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.showAffiliate(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/language":
 		a.showLanguage(ctx, message.Chat.ID, message.From.ID, false, 0)
+	case "/support":
+		a.openSupport(ctx, message.Chat.ID, message.From.ID, 0)
 	case "/help":
 		a.showHelp(ctx, message.Chat.ID, state.Locale)
 	case "/cancel":
@@ -350,22 +374,7 @@ func (a *App) handleIdentityError(ctx context.Context, chatID, userID int64, loc
 }
 
 func (a *App) welcome(ctx context.Context, chatID, userID int64, locale string) {
-	result := a.sessions.Update(userID, func(state *session.State) { state.Locale = locale; state.Flow = "" })
-	if !a.sessionOK(ctx, chatID, result.Err) {
-		return
-	}
-	config := a.botConfig()
-	message := localized(config.Welcome.Message, locale)
-	if message == "" {
-		name := config.Basic.DisplayName
-		if name == "" {
-			name = "Dujiao Next"
-		}
-		message = tr(locale, "欢迎来到 "+name+"！", "歡迎來到 "+name+"！", "Welcome to "+name+"!")
-	} else {
-		message = html.EscapeString(message)
-	}
-	a.send(ctx, chatID, message, a.homeKeyboard(locale))
+	a.welcomePresentation(ctx, chatID, userID, locale)
 }
 
 func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
@@ -375,6 +384,25 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	// Reject flooding before session reads and ACK with no extra chat message.
 	if !a.allowCallbackIngress(ctx, query) {
+		return
+	}
+	if !a.botConfig().Enabled && query.Data != "bcunsubscribe" {
+		_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: query.ID, Text: tr(a.sessions.Get(query.From.ID).Locale, "商店机器人暂时停用。", "商店機器人暫時停用。", "The store bot is paused.")})
+		return
+	}
+	if a.handleSupportCallback(ctx, query) {
+		return
+	}
+	if message.Chat.ID != query.From.ID || query.From.ID <= 0 {
+		return
+	}
+	if query.Data != "bcunsubscribe" {
+		if err := a.stopSupport(ctx, query.From.ID); err != nil {
+			a.sessionOK(ctx, message.Chat.ID, err)
+			return
+		}
+	}
+	if a.handleConfiguredMenu(ctx, query) || a.handleOrderGuardCallback(ctx, query) {
 		return
 	}
 	if query.Data == "noop" || query.Data == "none" {
@@ -446,7 +474,14 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	case "home":
 		a.edit(ctx, message.Chat.ID, message.ID, tr(locale, "请选择功能：", "請選擇功能：", "Choose an action:"), a.homeKeyboard(locale))
 	case "cats":
-		a.showCategories(ctx, message.Chat.ID, &query.From, true, message.ID)
+		if len(parts) == 1 {
+			a.showCategories(ctx, message.Chat.ID, &query.From, true, message.ID)
+		} else if len(parts) == 2 {
+			parentID, err := strconv.ParseUint(parts[1], 10, 32)
+			if err == nil {
+				a.showCategoryLevel(ctx, message.Chat.ID, &query.From, uint(parentID), true, message.ID)
+			}
+		}
 	case "cat":
 		if len(parts) == 3 {
 			categoryID, _ := strconv.ParseUint(parts[1], 10, 64)
@@ -573,6 +608,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 }
 
 func (a *App) showCategories(ctx context.Context, chatID int64, user *models.User, edit bool, messageID int) {
+	a.showCategoryLevel(ctx, chatID, user, 0, edit, messageID)
+}
+
+func (a *App) showCategoryLevel(ctx context.Context, chatID int64, user *models.User, parentID uint, edit bool, messageID int) {
 	locale := a.sessions.Get(user.ID).Locale
 	if _, err := a.api.ResolveIdentity(ctx, identityFromUser(user, locale)); err != nil {
 		a.send(ctx, chatID, tr(locale, "请先发送 /start 绑定商店账号。", "請先傳送 /start 綁定商店帳號。", "Send /start first to connect your store account."), nil)
@@ -583,21 +622,12 @@ func (a *App) showCategories(ctx context.Context, chatID int64, user *models.Use
 		a.apiFailure(ctx, chatID, locale, "list categories", err)
 		return
 	}
-	var choices []models.InlineKeyboardButton
-	for _, category := range categories {
-		label := category.Name
-		if category.ProductCount > 0 {
-			label += fmt.Sprintf(" (%d)", category.ProductCount)
-		}
-		choices = append(choices, models.InlineKeyboardButton{Text: label, CallbackData: fmt.Sprintf("cat:%d:1", category.ID)})
+	text, keyboard, ok := categoryMenu(categories, parentID, locale)
+	if !ok {
+		// A deleted/moved category in an old message returns to fresh roots.
+		text, keyboard, _ = categoryMenu(categories, 0, locale)
 	}
-	rows := compactActionRows(choices)
-	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: tr(locale, "全部商品", "全部商品", "All products"), CallbackData: "cat:0:1"},
-		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
-	})
-	text := tr(locale, "请选择商品分类：", "請選擇商品分類：", "Choose a product category:")
-	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
+	a.sendOrEdit(ctx, chatID, messageID, text, keyboard, edit)
 }
 
 func (a *App) showProducts(ctx context.Context, chatID, userID int64, categoryID uint, page int, edit bool, messageID int) {
@@ -605,6 +635,12 @@ func (a *App) showProducts(ctx context.Context, chatID, userID int64, categoryID
 		page = 1
 	}
 	locale := a.sessions.Get(userID).Locale
+	back := "cats"
+	if categoryID > 0 {
+		if categories, err := a.api.Categories(ctx, locale); err == nil {
+			back = categoryBackCallback(categories, categoryID)
+		}
+	}
 	products, err := a.api.Products(ctx, locale, strconv.FormatInt(userID, 10), categoryID, page, pageSize)
 	if err != nil {
 		a.apiFailure(ctx, chatID, locale, "list products", err)
@@ -639,7 +675,7 @@ func (a *App) showProducts(ctx context.Context, chatID, userID int64, categoryID
 		rows = append(rows, pager)
 	}
 	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: tr(locale, "‹ 分类", "‹ 分類", "‹ Categories"), CallbackData: "cats"},
+		{Text: tr(locale, "‹ 分类", "‹ 分類", "‹ Categories"), CallbackData: back},
 		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
 	})
 	if len(products.Items) == 0 {
@@ -729,7 +765,7 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 		rows = append(rows, compactActionRows(choices)...)
 	}
 	rows = append(rows, []models.InlineKeyboardButton{
-		{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"},
+		{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: productCategoryCallback(product)},
 		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
 	})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
@@ -773,6 +809,9 @@ func (a *App) validatePurchaseQuantity(ctx context.Context, chatID int64, messag
 }
 
 func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int) {
+	if chatID != user.ID || !a.orderCreationAvailable(ctx, user.ID) {
+		return
+	}
 	locale := a.sessions.Get(user.ID).Locale
 	if !a.validatePurchaseQuantity(ctx, chatID, messageID, user.ID, locale, productID, skuID, quantity) {
 		return
@@ -871,7 +910,7 @@ func (a *App) createOrder(ctx context.Context, chatID int64, messageID int, user
 	a.previewOrder(ctx, chatID, messageID, user, productID, skuID, quantity)
 }
 
-func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int, formData map[string]any, couponCode string) error {
+func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int, formData map[string]any, couponCode, draftID string) error {
 	locale := a.sessions.Get(user.ID).Locale
 	a.edit(ctx, chatID, messageID, tr(locale, "正在创建订单…", "正在建立訂單…", "Creating order…"), nil)
 	request := dujiao.OrderRequest{
@@ -881,15 +920,30 @@ func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID i
 		CouponCode:          couponCode,
 		AffiliateVisitorKey: affiliateVisitorKey(user.ID),
 	}
+	guardID, guardErr := a.beginOrderCreation(user.ID, draftID)
+	if guardErr != nil {
+		a.orderCreationAvailable(ctx, user.ID)
+		return guardErr
+	}
 	op := a.ops.Begin(operations.Order, user.ID, 0)
-	order, err := a.api.CreateOrder(ctx, request)
+	createCtx, cancelCreate := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelCreate()
+	order, err := a.api.CreateOrder(createCtx, request)
+	if err == nil && (order.OrderID == 0 || order.OrderNo == "") {
+		err = errors.New("order creation result is unconfirmed")
+	}
+	guardSaved := a.finishOrderCreation(user.ID, guardID, err)
 	op.End(financialOutcome(err), order.OrderID)
 	if err != nil {
 		if isAPIError(err, "coupon_invalid") {
 			return err
 		}
 		a.logger.Error("create Dujiao order failed", "user_id", user.ID)
-		a.edit(ctx, chatID, messageID, tr(locale, "订单创建失败，请返回商品后重试。", "訂單建立失敗，請返回商品後再試。", "Could not create the order. Return to the product and try again."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
+		if orderCreationUnknown(err) || !guardSaved {
+			a.edit(ctx, chatID, messageID, orderUnknownText(locale), orderGuardKeyboard(locale))
+		} else {
+			a.edit(ctx, chatID, messageID, tr(locale, "订单未能创建，请检查购买条件后重试。", "訂單未能建立，請檢查購買條件後重試。", "The order was rejected. Check the purchase requirements before retrying."), a.homeKeyboard(locale))
+		}
 		return err
 	}
 	channels, err := a.api.PaymentChannels(ctx, strconv.FormatInt(user.ID, 10), order.OrderNo)
@@ -1035,7 +1089,15 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 	}
 	filterCode, page := orderContext(orderFilterCode(status), strconv.Itoa(page))
 	status = orderFilterStatus(filterCode)
-	locale := a.sessions.Get(userID).Locale
+	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, chatID, state.Err) {
+		return
+	}
+	locale := state.Locale
+	reviewGuardID := ""
+	if state.OrderGuard != nil && state.OrderGuard.Status == "unknown" {
+		reviewGuardID = state.OrderGuard.ID
+	}
 	orders, err := a.api.Orders(ctx, strconv.FormatInt(userID, 10), locale, status, page, 5)
 	if err != nil {
 		a.orderReadFailure(ctx, chatID, locale, err)
@@ -1101,6 +1163,7 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 	}
 	rows = append(rows, shopHomeButtons(locale))
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
+	a.markOrderGuardReviewed(ctx, userID, reviewGuardID)
 }
 
 func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
@@ -1187,6 +1250,9 @@ func (a *App) renderOrder(ctx context.Context, chatID int64, messageID int, loca
 }
 
 func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
+	if chatID != userID || userID <= 0 {
+		return
+	}
 	locale := a.sessions.Get(userID).Locale
 	wallet, err := a.api.Wallet(ctx, strconv.FormatInt(userID, 10))
 	if err != nil {
@@ -1207,6 +1273,9 @@ func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, m
 }
 
 func (a *App) showWalletTransactions(ctx context.Context, chatID, userID int64, page int, edit bool, messageID int) {
+	if chatID != userID || userID <= 0 {
+		return
+	}
 	if page < 1 {
 		page = 1
 	}
@@ -1316,83 +1385,15 @@ func (a *App) showLanguage(ctx context.Context, chatID, userID int64, edit bool,
 }
 
 func (a *App) showHelp(ctx context.Context, chatID int64, locale string) {
-	a.send(ctx, chatID, a.helpText(locale), a.helpKeyboard(locale))
+	a.helpPresentation(ctx, chatID, 0, locale)
 }
 
 func (a *App) showHelpEdit(ctx context.Context, chatID int64, messageID int, locale string) {
-	a.edit(ctx, chatID, messageID, a.helpText(locale), a.helpKeyboard(locale))
-}
-
-func (a *App) helpKeyboard(locale string) models.InlineKeyboardMarkup {
-	var rows [][]models.InlineKeyboardButton
-	if target := orderSupportTarget(a.botConfig().Basic.SupportURL, ""); target.URL != "" {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "💬 联系客服", "💬 聯絡客服", "💬 Support"), URL: target.URL}})
-	}
-	rows = append(rows,
-		[]models.InlineKeyboardButton{
-			{Text: tr(locale, "📦 我的订单", "📦 我的訂單", "📦 Orders"), CallbackData: "orders:a:1"},
-			{Text: tr(locale, "💰 我的钱包", "💰 我的錢包", "💰 Wallet"), CallbackData: "wallet"},
-		},
-		[]models.InlineKeyboardButton{
-			{Text: tr(locale, "🌐 切换语言", "🌐 切換語言", "🌐 Language"), CallbackData: "lang"},
-			{Text: tr(locale, "🔔 公告订阅", "🔔 公告訂閱", "🔔 Announcements"), CallbackData: "bcsubscriptions"},
-		},
-		shopHomeButtons(locale),
-	)
-	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
-}
-
-func (a *App) helpText(locale string) string {
-	config := a.botConfig()
-	intro := localized(config.Help.Intro, locale)
-	if intro != "" {
-		return html.EscapeString(intro)
-	}
-	return tr(locale,
-		"购买：选择商品和数量，确认订单后选择支付方式。\n订单与售后：在「我的订单」查看进度，有交付内容时可下载 TXT，也可携订单号联系客服。\n充值：打开「我的钱包」。公告订阅是可选的，不影响订单通知。",
-		"購買：選擇商品與數量，確認訂單後選擇付款方式。\n訂單與售後：在「我的訂單」查看進度，有交付內容時可下載 TXT，也可攜訂單號聯絡客服。\n儲值：開啟「我的錢包」。公告訂閱是可選的，不影響訂單通知。",
-		"Buying: choose a product and quantity, confirm the order, then choose a payment method.\nOrders and support: open My orders to check progress, download an available TXT delivery, or contact support with the order number.\nRecharge: open My wallet. Announcement subscriptions are optional and do not affect order notifications.")
+	a.helpPresentation(ctx, chatID, messageID, locale)
 }
 
 func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
-	fallbackRows := [][]models.InlineKeyboardButton{
-		{{Text: tr(locale, "🛍 浏览商品", "🛍 瀏覽商品", "🛍 Browse products"), CallbackData: "cats"}},
-		{
-			{Text: tr(locale, "📦 我的订单", "📦 我的訂單", "📦 My orders"), CallbackData: "orders:1"},
-			{Text: tr(locale, "💰 余额", "💰 餘額", "💰 Wallet"), CallbackData: "wallet"},
-		},
-		{{Text: tr(locale, "🤝 推广中心", "🤝 推廣中心", "🤝 Affiliate"), CallbackData: "affiliate"}},
-		{
-			{Text: tr(locale, "🌐 语言", "🌐 語言", "🌐 Language"), CallbackData: "lang"},
-			{Text: tr(locale, "❓ 帮助", "❓ 幫助", "❓ Help"), CallbackData: "help"},
-		},
-	}
-	config := a.botConfig()
-	var rows [][]models.InlineKeyboardButton
-	if len(config.Menu.Items) == 0 {
-		rows = fallbackRows
-	} else {
-		rows = configuredMenuRows(config.Menu.Items, locale)
-	}
-	announcement := models.InlineKeyboardButton{Text: tr(locale, "🔔 公告订阅", "🔔 公告訂閱", "🔔 Announcements"), CallbackData: "bcsubscriptions"}
-	var buttons []models.InlineKeyboardButton
-	announcementAdded := false
-	for _, row := range rows {
-		for _, button := range row {
-			buttons = append(buttons, button)
-			if button.CallbackData == "affiliate" && !announcementAdded {
-				buttons = append(buttons, announcement)
-				announcementAdded = true
-			}
-		}
-	}
-	if !announcementAdded {
-		buttons = append(buttons, announcement)
-	}
-	if contact := orderSupportTarget(config.Basic.SupportURL, ""); contact.URL != "" {
-		buttons = append(buttons, models.InlineKeyboardButton{Text: tr(locale, "💬 联系客服", "💬 聯絡客服", "💬 Support"), URL: contact.URL})
-	}
-	return models.InlineKeyboardMarkup{InlineKeyboard: compactHomeMenuRows(buttons)}
+	return a.homePresentation(locale)
 }
 
 // Keep shopping prominent, pair short secondary actions, and avoid squeezing
@@ -1402,40 +1403,7 @@ func compactHomeMenuRows(buttons []models.InlineKeyboardButton) [][]models.Inlin
 }
 
 func configuredMenuRows(items []dujiao.BotMenuItem, locale string) [][]models.InlineKeyboardButton {
-	if len(items) == 0 {
-		return nil
-	}
-	items = append([]dujiao.BotMenuItem(nil), items...)
-	sort.SliceStable(items, func(i, j int) bool { return items[i].Order < items[j].Order })
-	callbacks := map[string]string{
-		"shop_home":       "cats",
-		"my_orders":       "orders:1",
-		"my_wallet":       "wallet",
-		"affiliate":       "affiliate",
-		"my_affiliate":    "affiliate",
-		"switch_language": "lang",
-		"contact_support": "help",
-	}
-	rows := make([][]models.InlineKeyboardButton, 0, len(items))
-	for _, item := range items {
-		if !item.Enabled {
-			continue
-		}
-		label := localized(item.Label, locale)
-		if label == "" {
-			continue
-		}
-		button := models.InlineKeyboardButton{Text: label}
-		if item.Action.Type == "url" && safeHTTPURL(item.Action.Value) {
-			button.URL = item.Action.Value
-		} else if callback := callbacks[item.Key]; callback != "" {
-			button.CallbackData = callback
-		} else {
-			continue
-		}
-		rows = append(rows, []models.InlineKeyboardButton{button})
-	}
-	return rows
+	return (&App{}).configuredPresentationRows(items, locale)
 }
 
 func safeHTTPURL(value string) bool {

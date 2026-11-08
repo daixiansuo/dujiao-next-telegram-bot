@@ -26,6 +26,7 @@ type State struct {
 	OrderLookup     *OrderLookupInput
 	Withdrawal      *WithdrawalDraft
 	WithdrawalGuard *WithdrawalGuard
+	OrderGuard      *OrderCreateGuard
 }
 
 // OrderLookupInput holds navigation metadata only, never the searched number.
@@ -71,6 +72,14 @@ type WithdrawalDraft struct {
 
 // WithdrawalGuard survives menu navigation and draft expiry. It never contains
 // payment details. Unknown writes require a deliberate history review to unlock.
+// OrderCreateGuard contains no order input and survives navigation and draft expiry.
+type OrderCreateGuard struct {
+	ID              string
+	Status          string
+	ReviewMessageID int
+	LeaseUntil      time.Time
+}
+
 type WithdrawalGuard struct {
 	ID              string
 	Status          string
@@ -122,6 +131,10 @@ type PurchaseDraft struct {
 }
 
 func cloneState(state State) State {
+	if state.OrderGuard != nil {
+		g := *state.OrderGuard
+		state.OrderGuard = &g
+	}
 	if state.OrderLookup != nil {
 		input := *state.OrderLookup
 		state.OrderLookup = &input
@@ -205,6 +218,10 @@ type Store interface {
 }
 
 func normalizeState(state State, now time.Time) State {
+	if g := state.OrderGuard; g != nil && g.Status == "posting" && !now.Before(g.LeaseUntil) {
+		g.Status = "unknown"
+		g.ReviewMessageID = 0
+	}
 	if state.OrderLookup != nil && !now.Before(state.OrderLookup.ExpiresAt) {
 		state.OrderLookup = nil
 		if state.Flow == "order_lookup" {
@@ -295,3 +312,10 @@ func (m *Memory) ResetFlow(userID int64) error {
 
 func (m *Memory) Health() error { return nil }
 func (m *Memory) Close() error  { return nil }
+
+// SetDefaultLocale changes the fallback for new users, preserving saved choices.
+func (m *Memory) SetDefaultLocale(locale string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultLocale = locale
+}

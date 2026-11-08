@@ -35,12 +35,15 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestConfiguredMenuRowsHonorsEnabledItems(t *testing.T) {
-	rows := configuredMenuRows([]dujiao.BotMenuItem{
+	items := []dujiao.BotMenuItem{
 		{Key: "my_orders", Enabled: true, Order: 2, Label: dujiao.LocalizedText{"en-US": "Orders"}},
 		{Key: "shop_home", Enabled: false, Order: 1, Label: dujiao.LocalizedText{"en-US": "Shop"}},
 		{Key: "docs", Enabled: true, Order: 3, Label: dujiao.LocalizedText{"en-US": "Docs"}, Action: dujiao.BotMenuAction{Type: "url", Value: "https://example.com"}},
-	}, "en-US")
-	if len(rows) != 2 || rows[0][0].CallbackData != "orders:1" || rows[1][0].URL != "https://example.com" {
+	}
+	a := &App{}
+	a.UpdateConfig(dujiao.BotConfig{Enabled: true, Menu: dujiao.BotMenuConfig{Items: items}})
+	rows := configuredMenuRows(items, "en-US")
+	if len(rows) != 2 || configuredTestAction(t, a, rows[0][0]) != "orders:1" || rows[1][0].URL != "https://example.com" {
 		t.Fatalf("rows = %#v", rows)
 	}
 }

@@ -18,14 +18,16 @@ type BotConfigResponse struct {
 }
 
 type BotConfig struct {
-	Enabled       bool             `json:"enabled"`
-	BotToken      string           `json:"bot_token"`
-	DefaultLocale string           `json:"default_locale"`
-	ConfigVersion int              `json:"config_version"`
-	Basic         BotBasicConfig   `json:"basic"`
-	Welcome       BotWelcomeConfig `json:"welcome"`
-	Help          BotHelpConfig    `json:"help"`
-	Menu          BotMenuConfig    `json:"menu"`
+	// PublicTelegram is cached from the existing public site settings. It is never sent to Channel endpoints.
+	PublicTelegram TelegramPublicConfig `json:"-"`
+	Enabled        bool                 `json:"enabled"`
+	BotToken       string               `json:"bot_token"`
+	DefaultLocale  string               `json:"default_locale"`
+	ConfigVersion  int                  `json:"config_version"`
+	Basic          BotBasicConfig       `json:"basic"`
+	Welcome        BotWelcomeConfig     `json:"welcome"`
+	Help           BotHelpConfig        `json:"help"`
+	Menu           BotMenuConfig        `json:"menu"`
 }
 
 type BotBasicConfig struct {
@@ -41,9 +43,22 @@ type BotWelcomeConfig struct {
 }
 
 type BotHelpConfig struct {
-	Enabled bool          `json:"enabled"`
-	Title   LocalizedText `json:"title"`
-	Intro   LocalizedText `json:"intro"`
+	Enabled     bool          `json:"enabled"`
+	Title       LocalizedText `json:"title"`
+	Intro       LocalizedText `json:"intro"`
+	CenterHint  LocalizedText `json:"center_hint"`
+	SupportHint LocalizedText `json:"support_hint"`
+	Items       []BotHelpItem `json:"items"`
+}
+
+type BotHelpItem struct {
+	Key             string        `json:"key"`
+	Enabled         bool          `json:"enabled"`
+	Order           int           `json:"order"`
+	Summary         LocalizedText `json:"summary"`
+	Title           LocalizedText `json:"title"`
+	Content         LocalizedText `json:"content"`
+	ShowSupportLink bool          `json:"show_support_link"`
 }
 
 type BotMenuConfig struct {
@@ -151,6 +166,7 @@ type ProductList struct {
 
 type ProductDetail struct {
 	Product
+	CategoryID          uint             `json:"category_id"`
 	Description         string           `json:"description"`
 	FulfillmentType     string           `json:"fulfillment_type"`
 	MinPurchaseQuantity int              `json:"min_purchase_quantity"`

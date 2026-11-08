@@ -59,7 +59,7 @@ func TestOrderSupportMessageIsMinimalBoundedAndLocalized(t *testing.T) {
 
 func TestOrderSupportDetailsAndReasonButtonsUseOwnerScopedMinimalContext(t *testing.T) {
 	a, f := newPendingFixture(t)
-	a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
+	a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
 	f.order.Status = "partially_delivered"
 	f.order.FulfillmentResult = "SECRET-CARD"
 	f.order.FulfillmentInstructions = "SECRET-INSTRUCTIONS"
@@ -129,7 +129,7 @@ func supportURL(keyboard models.InlineKeyboardMarkup) string {
 
 func TestOrderSupportRejectsForeignGroupMalformedAndMismatchingOrders(t *testing.T) {
 	a, f := newPendingFixture(t)
-	a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
+	a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
 	for _, tc := range []struct {
 		uid, chat int64
 		data      string
@@ -154,7 +154,7 @@ func TestOrderSupportRejectsForeignGroupMalformedAndMismatchingOrders(t *testing
 func TestOrderSupportMissingWebsiteBotAndChangedConfiguration(t *testing.T) {
 	a, f := newPendingFixture(t)
 	for _, raw := range []string{"", "javascript:bad", "https://support.example.invalid/help", "https://t.me/SyntheticHelpBot?start=original", "https://t.me/m/test_slug", "@synthetic_support"} {
-		a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: raw}})
+		a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: raw}})
 		f.order.Status = "refunded"
 		pendingClick(a, 42, 42, 10, "support:7:v:2:r")
 		text := f.texts[len(f.texts)-1]
@@ -171,8 +171,12 @@ func TestOrderSupportMissingWebsiteBotAndChangedConfiguration(t *testing.T) {
 		}
 	}
 	a.showHelp(context.Background(), 42, "zh-CN")
-	if supportURL(f.markups[len(f.markups)-1]) != "https://t.me/synthetic_support" || supportURL(a.homeKeyboard("zh-CN")) != "https://t.me/synthetic_support" {
-		t.Fatal("help/home do not share current contact")
+	if supportURL(f.markups[len(f.markups)-1]) != "https://t.me/synthetic_support" {
+		t.Fatal("help did not use current contact")
+	}
+	home := a.homeKeyboard("zh-CN")
+	if supportURL(home) != "" || findCallback(home, "help") != "help" {
+		t.Fatal("home lost its help entry or restored a separate unmanaged contact")
 	}
 }
 
@@ -184,7 +188,7 @@ func (s unavailableSupportSessions) Get(int64) session.State {
 
 func TestOrderSupportUnavailableStoreDoesNotProduceContext(t *testing.T) {
 	a, f := newPendingFixture(t)
-	a.UpdateConfig(dujiao.BotConfig{Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
+	a.UpdateConfig(dujiao.BotConfig{Enabled: true, Basic: dujiao.BotBasicConfig{SupportURL: "@synthetic_support"}})
 	f.orderReadFailure = true
 	pendingClick(a, 42, 42, 10, "support:7:p:2:d")
 	if strings.Contains(f.texts[len(f.texts)-1], "DJ7") || supportURL(f.markups[len(f.markups)-1]) != "" || strings.Contains(f.logs.text(), "PRIVATE-PAYMENT-ERROR") {

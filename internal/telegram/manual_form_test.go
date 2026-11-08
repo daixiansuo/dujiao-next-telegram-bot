@@ -234,7 +234,7 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := New("999:test", api, dujiao.BotConfig{}, "zh-CN", time.Second, server.URL, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := New("999:test", api, dujiao.BotConfig{Enabled: true}, "zh-CN", time.Second, server.URL, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
