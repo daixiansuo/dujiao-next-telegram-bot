@@ -1,0 +1,164 @@
+name: Publish container image
+
+# 与商城保持一致：仅 idid、id-* 分支推送自动触发；PR 和 Tag 推送不触发。
+on:
+  push:
+    branches:
+      - idid
+      - 'id-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [[ -n "$unformatted" ]]; then
+            echo "::error::The following Go files are not formatted:"
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Run tests with race detector
+        run: go test -race ./...
+
+      - name: Verify Redis AOF restart recovery
+        env:
+          BOT_TEST_REDIS_URL: redis://127.0.0.1:16379
+        run: |
+          docker run --detach --name session-redis --publish 127.0.0.1:16379:6379 --volume session-redis-data:/data redis:7.4-alpine redis-server --appendonly yes --appendfsync always --maxmemory-policy noeviction
+          for attempt in $(seq 1 30); do
+            if docker exec session-redis redis-cli ping; then break; fi
+            sleep 1
+          done
+          BOT_TEST_REDIS_PHASE=seed go test ./internal/session -run '^TestRedisAOFRestart$' -count=1
+          docker restart session-redis
+          for attempt in $(seq 1 30); do
+            if docker exec session-redis redis-cli ping; then break; fi
+            sleep 1
+          done
+          BOT_TEST_REDIS_PHASE=verify go test ./internal/session -run '^TestRedisAOFRestart$' -count=1
+
+  publish:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve image and application version
+        id: image
+        shell: bash
+        run: |
+          image_name="${GITHUB_REPOSITORY,,}"
+          version="$GITHUB_REF_NAME"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            version="${version}-${GITHUB_SHA:0:7}"
+          fi
+          echo "name=ghcr.io/$image_name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Go 在构建机原生架构交叉编译；最终 Alpine 阶段由 QEMU 支持异构执行。
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 功能分支和手动选择的 Tag 不更新 latest。
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/idid' }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+
+      - name: Build and push multi-platform image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.image.outputs.version }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=bot-image
+          cache-to: type=gha,scope=bot-image,mode=max
+
+      - name: Publish image summary
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          APP_VERSION: ${{ steps.image.outputs.version }}
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo '### IDID Telegram Bot image published'
+            echo
+            printf -- '- Image: `%s`\n' "$IMAGE_NAME"
+            printf -- '- App version: `%s`\n' "$APP_VERSION"
+            printf -- '- Digest: `%s`\n' "$IMAGE_DIGEST"
+            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+            echo
+            echo 'Tags:'
+            echo '```text'
+            printf '%s\n' "$IMAGE_TAGS"
+            echo '```'
+            echo
+            echo 'Pull this exact build:'
+            echo '```bash'
+            printf 'docker pull %s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

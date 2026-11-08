@@ -1,6 +1,6 @@
 # Dujiao Next Telegram Bot Community
 
-[![CI](https://github.com/dunea/dujiao-next-telegram-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/dunea/dujiao-next-telegram-bot/actions/workflows/ci.yml)
+[![Docker image](https://github.com/daixiansuo/dujiao-next-telegram-bot/actions/workflows/docker-build.yml/badge.svg)](https://github.com/daixiansuo/dujiao-next-telegram-bot/actions/workflows/docker-build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 一个免费、开源的 Dujiao-Next Telegram 商店机器人。项目使用 Go 开发，通过 Dujiao-Next Channel API 读取商店配置、商品、订单、钱包和支付信息。
@@ -32,6 +32,26 @@ BOT_SUPPORT_USER_IDS=123456789,987654321
 升级与回滚前核对未决订单和提现，备份原有 Redis 卷与加密密钥。上游旧版本不能识别本分支新增的下单保护；不能依靠回滚、清理 Redis 或换命名空间解除保护。正常重启会保留映射和保护状态。长轮询进程异常退出时，尚未持久化的更新仍存在丢失窗口；发送响应丢失也可能造成结果未知，不承诺消息恰好一次。
 
 自动验证使用本地模拟 Telegram、HTTP 和 Redis。部署后请使用测试 Bot/测试群核对多客户回复、媒体权限、暂停恢复及重启，不把模拟测试视为真实 Telegram 或真实支付验收。
+
+## Docker 镜像构建与发布
+
+本分支使用 `.github/workflows/docker-build.yml`，沿用商城 IDID 分支的触发及标签规则。Go 格式、依赖、vet、竞态测试及 Redis AOF 重启恢复验证全部通过后，构建并推送 `linux/amd64`、`linux/arm64` 镜像至 `ghcr.io/<owner>/<repository>`，仓库路径自动转为小写。本仓库对应 `ghcr.io/daixiansuo/dujiao-next-telegram-bot`。
+
+| 触发方式 | 镜像标签 |
+| --- | --- |
+| 推送到 `idid` | `idid`、`latest`、`sha-<完整提交 SHA>` |
+| 推送到 `id-*`，例如 `id-1.0.0` | `id-1.0.0`、`sha-<完整提交 SHA>` |
+| Actions 手动执行 | 所选分支或 Tag 名、`sha-<完整提交 SHA>`；仅选择 `idid` 分支时更新 `latest` |
+
+`main` 用于同步上游；推送到 `main` 或其他分支、创建 PR、推送 Tag 均不自动触发。本流程不创建 GitHub Release、不打包下载附件、不执行旧上游版本联调，也不自动部署或重启服务器。上游集成测试及手工打包脚本仍可按需本地运行。手动执行入口要求默认分支已包含该 Workflow。
+
+GHCR 登录使用本次运行的 `GITHUB_TOKEN`，仅发布任务具有 `packages: write`，不需要在仓库中保存个人 Token。首次发布后，可在 GitHub Packages 确认镜像可见性；私有镜像拉取前需要登录 GHCR。
+
+分支镜像内的 Bot 版本为 `<分支名>-<短 SHA>`，手动选择 Tag 时为 Tag 名，通过 `--version`、商城心跳和镜像 OCI 标签可核对。本地构建未传 `APP_VERSION` 时保留 `1.0.0-dev`。Actions 摘要提供构建版本、镜像标签、Digest 和精确拉取命令。首次推送本次改动并成功构建后，可拉取当前版本分支的镜像：
+
+```bash
+docker pull ghcr.io/daixiansuo/dujiao-next-telegram-bot:id-1.0.0
+```
 
 ## 界面预览
 
